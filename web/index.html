@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sysprof</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#d7dae0; --dim:#8a91a0;
+          --p50:#4ea1ff; --p95:#f5a524; --p99:#f31260; --bar:#4ea1ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.4 ui-monospace,Menlo,Consolas,monospace; }
+  header { display:flex; gap:16px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:14px; margin:0; }
+  header .dim { color:var(--dim); }
+  header input { background:var(--panel); border:1px solid var(--line); color:var(--text); padding:4px 8px; border-radius:4px; font:inherit; }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap:12px; padding:12px 16px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px; min-width:0; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size:12px; margin:0 0 8px; color:var(--dim); font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:right; padding:3px 6px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child,td:first-child { text-align:left; }
+  th { color:var(--dim); font-weight:600; cursor:pointer; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover, tr.sel { background:#1f2430; }
+  .tag { color:var(--p95); font-size:11px; margin-left:6px; }
+  canvas { width:100%; height:200px; display:block; }
+  .legend span { margin-right:12px; }
+  @media (max-width:900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>sysprof</h1>
+  <span class="dim" id="status">connecting...</span>
+  <span id="rate"></span>
+  <input id="filter" placeholder="filter syscall / pid / process">
+</header>
+<main>
+  <section class="wide">
+    <h2>Syscalls <span class="dim">(click a row to inspect, click a header to sort; blocking syscalls are tagged wait)</span></h2>
+    <table id="sys"><thead><tr>
+      <th data-k="name">syscall</th><th data-k="count">count</th><th data-k="rate">calls/s</th>
+      <th data-k="total_ns">total</th><th data-k="avg_ns">avg</th><th data-k="p50_ns">p50</th>
+      <th data-k="p95_ns">p95</th><th data-k="p99_ns">p99</th><th data-k="max_ns">max</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+  <section><h2>Latency histogram: <span id="selA">-</span></h2><canvas id="hist"></canvas></section>
+  <section><h2>p50 / p95 / p99 over time: <span id="selB">-</span>
+    <span class="legend"><span style="color:var(--p50)">p50</span><span style="color:var(--p95)">p95</span><span style="color:var(--p99)">p99</span></span></h2>
+    <canvas id="pct"></canvas></section>
+  <section><h2>Syscall rate (calls/s, all)</h2><canvas id="rateChart"></canvas></section>
+  <section><h2>Processes</h2>
+    <table id="proc"><thead><tr><th>process</th><th>pid</th><th>count</th><th>calls/s</th><th>total</th><th>avg</th><th>top syscall</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+<script>
+let snap = null, hist = [], selected = null, sortKey = "total_ns";
+const $ = id => document.getElementById(id);
+
+const fmtNs = ns => ns < 1e3 ? ns.toFixed(0)+"ns" : ns < 1e6 ? (ns/1e3).toFixed(1)+"us"
+                  : ns < 1e9 ? (ns/1e6).toFixed(1)+"ms" : (ns/1e9).toFixed(2)+"s";
+const fmtN = n => n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(Math.round(n));
+
+function matches(q, ...fields) { return !q || fields.some(f => String(f).toLowerCase().includes(q)); }
+
+function render() {
+  if (!snap) return;
+  const q = $("filter").value.trim().toLowerCase();
+  $("rate").textContent = fmtN(snap.rate) + " calls/s";
+
+  const rows = (snap.syscalls || []).filter(s => matches(q, s.name)).sort((a,b) =>
+    sortKey === "name" ? a.name.localeCompare(b.name) : b[sortKey] - a[sortKey]);
+  if (!selected && rows.length) selected = rows[0].name;
+  $("sys").tBodies[0].innerHTML = rows.slice(0, 40).map(s =>
+    `<tr data-n="${s.name}" class="${s.name===selected?"sel":""}"><td>${s.name}${s.blocking?'<span class="tag">wait</span>':""}</td>
+     <td>${fmtN(s.count)}</td><td>${fmtN(s.rate)}</td><td>${fmtNs(s.total_ns)}</td><td>${fmtNs(s.avg_ns)}</td>
+     <td>${fmtNs(s.p50_ns)}</td><td>${fmtNs(s.p95_ns)}</td><td>${fmtNs(s.p99_ns)}</td><td>${fmtNs(s.max_ns)}</td></tr>`).join("");
+
+  $("proc").tBodies[0].innerHTML = (snap.processes || []).filter(p => matches(q, p.comm, p.pid)).slice(0, 15).map(p =>
+    `<tr><td>${p.comm}</td><td>${p.pid}</td><td>${fmtN(p.count)}</td><td>${fmtN(p.rate)}</td>
+     <td>${fmtNs(p.total_ns)}</td><td>${fmtNs(p.avg_ns)}</td><td>${p.top_syscall||"-"}</td></tr>`).join("");
+
+  const sel = (snap.syscalls || []).find(s => s.name === selected);
+  $("selA").textContent = $("selB").textContent = selected || "-";
+  drawHist(sel ? sel.hist : []);
+  drawLines($("pct"), [
+    {color:"#4ea1ff", data: hist.map(h => (h.syscalls[selected]||{}).p50_ns)},
+    {color:"#f5a524", data: hist.map(h => (h.syscalls[selected]||{}).p95_ns)},
+    {color:"#f31260", data: hist.map(h => (h.syscalls[selected]||{}).p99_ns)},
+  ], fmtNs);
+  drawLines($("rateChart"), [{color:"#4ea1ff", data: hist.map(h => h.rate)}], fmtN);
+}
+
+function setup(c) {
+  const r = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  c.width = w * r; c.height = h * r;
+  const g = c.getContext("2d"); g.scale(r, r);
+  g.clearRect(0, 0, w, h); g.font = "11px ui-monospace,Menlo,monospace";
+  return {g, w, h};
+}
+
+// Log2 buckets: trim empty ends so the interesting range fills the chart.
+function drawHist(h) {
+  const {g, w, h: H} = setup($("hist"));
+  let lo = h.findIndex(v => v > 0), hi = h.length - 1 - [...h].reverse().findIndex(v => v > 0);
+  if (lo < 0) return;
+  const max = Math.max(...h), n = hi - lo + 1, bw = (w - 10) / n;
+  g.fillStyle = "#8a91a0";
+  for (let i = lo; i <= hi; i++) {
+    const bh = (h[i] / max) * (H - 36);
+    g.fillStyle = "#4ea1ff";
+    g.fillRect(5 + (i-lo)*bw + 1, H - 18 - bh, Math.max(bw - 2, 1), bh);
+    if (n <= 14 || (i-lo) % 2 === 0) { g.fillStyle = "#8a91a0"; g.fillText(fmtNs(2**i), 5 + (i-lo)*bw, H - 4); }
+  }
+}
+
+function drawLines(c, series, fmt) {
+  const {g, w, h} = setup(c), padL = 52, padB = 16;
+  const all = series.flatMap(s => s.data).filter(v => v != null);
+  if (!all.length) return;
+  const max = Math.max(...all) * 1.1 || 1, n = series[0].data.length;
+  g.strokeStyle = "#262b36"; g.fillStyle = "#8a91a0";
+  for (let i = 0; i <= 3; i++) {
+    const y = 4 + (h - padB - 8) * i / 3;
+    g.beginPath(); g.moveTo(padL, y); g.lineTo(w, y); g.stroke();
+    g.fillText(fmt(max * (1 - i/3)), 2, y + 4);
+  }
+  for (const s of series) {
+    g.strokeStyle = s.color; g.beginPath(); let pen = false;
+    s.data.forEach((v, i) => {
+      if (v == null) { pen = false; return; }
+      const x = padL + (w - padL - 4) * (n < 2 ? 1 : i / (n - 1));
+      const y = 4 + (h - padB - 8) * (1 - v / max);
+      pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true;
+    });
+    g.stroke();
+  }
+}
+
+$("sys").tHead.onclick = e => { const k = e.target.dataset.k; if (k) { sortKey = k; render(); } };
+$("sys").tBodies[0].onclick = e => { const tr = e.target.closest("tr"); if (tr) { selected = tr.dataset.n; render(); } };
+$("filter").oninput = render;
+addEventListener("resize", render);
+
+const es = new EventSource("/stream");
+es.onopen = () => $("status").textContent = "live";
+es.onerror = () => $("status").textContent = "disconnected, retrying...";
+es.onmessage = e => { const d = JSON.parse(e.data); snap = d.snapshot; hist = d.history || []; render(); };
+</script>
+</body>
+</html>
