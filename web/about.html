@@ -36,6 +36,8 @@
 <main>
   <p class="lead">sysprof measures how long Linux system calls take, using eBPF, without
   modifying the kernel or the programs it observes.</p>
+  <p>It also acts on the kernel: it can block operations, shortcut local networking and set CPU
+  priorities, all from this dashboard.</p>
   <p class="dim">An OS course project. One Go binary: a terminal view, this web UI, and a recorder.</p>
 
   <h2>The problem</h2>
@@ -56,6 +58,17 @@
     <li>The terminal view and this page both read the same data.</li>
   </ol>
 
+  <h2>Beyond measuring: active controls</h2>
+  <ol>
+    <li><b>Shield:</b> BPF LSM programs run before <code>exec</code>, <code>open</code> and
+        <code>ptrace</code> and return <code>-EPERM</code> (or kill the process) when a rule matches.
+        Rules live in a kernel map, so they change without restarting anything.</li>
+    <li><b>Bypass:</b> a sockops program registers loopback TCP sockets and an sk_msg program
+        redirects each send into the peer's receive queue, skipping the TCP/IP stack.</li>
+    <li><b>Scheduler:</b> CPU hogs get a nice value from the chosen policy, and a probe measures
+        how late a 1ms sleep wakes up, which is the jitter latency-sensitive work feels.</li>
+  </ol>
+
   <h2>Features</h2>
   <div class="grid">
     <div class="card"><b>Per syscall latency</b><span>Count, calls/s, total, average, p50, p95, p99 and max for every syscall.</span></div>
@@ -74,7 +87,8 @@
   <h2>Using it</h2>
 <pre>sysprof top                      live terminal table
 sysprof serve                    this web UI, on 127.0.0.1:8080
-sysprof record -o out.jsonl      save snapshots to a file</pre>
+sysprof record -o out.jsonl      save snapshots to a file
+sysprof serve --fake             demo data, active panels simulated</pre>
 
   <h2>Good to know</h2>
   <ul>
@@ -82,6 +96,7 @@ sysprof record -o out.jsonl      save snapshots to a file</pre>
     <li>Percentiles are estimated from log2 buckets, so they are accurate to within one power of two.</li>
     <li>Needs Linux with eBPF and root. On other systems it runs with generated demo data (<code>--fake</code>).</li>
     <li>The server binds to <code>127.0.0.1</code> because the tool runs as root and exposes system internals.</li>
+    <li>The shield covers exec, open and ptrace. The scheduler panel does not load a <code>sched_ext</code> scheduler.</li>
     <li>Raw per call events are never streamed, so there is no per call outlier list. Max latency is shown instead.</li>
   </ul>
 
