@@ -9,13 +9,31 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/scheduler"
+	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/shield"
+	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/sockbypass"
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/store"
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/web"
 )
 
-// New builds the HTTP handler for the given store.
-func New(st *store.Store) http.Handler {
+// Active groups the subsystems that change kernel behaviour.
+type Active struct {
+	Shield shield.Shield
+	Bypass sockbypass.Bypass
+	Sched  scheduler.Scheduler
+	// Loopback is true when the server listens on a loopback address only.
+	Loopback bool
+	// AllowRemote permits state changing requests when the server is not
+	// bound to loopback. Off by default: the daemon runs as root.
+	AllowRemote bool
+}
+
+// New builds the HTTP handler. act may be nil for a read only profiler.
+func New(st *store.Store, act *Active) http.Handler {
 	mux := http.NewServeMux()
+	if act != nil {
+		registerActive(mux, act)
+	}
 
 	mux.HandleFunc("GET /api/snapshot", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, st.Latest())
@@ -27,7 +45,7 @@ func New(st *store.Store) http.Handler {
 		writeJSON(w, st.Latest().Processes)
 	})
 	mux.HandleFunc("GET /stream", func(w http.ResponseWriter, r *http.Request) {
-		stream(st, w, r)
+		stream(st, act, w, r)
 	})
 
 	mux.Handle("/", http.FileServer(http.FS(web.FS)))
@@ -35,7 +53,7 @@ func New(st *store.Store) http.Handler {
 }
 
 // stream pushes the latest snapshot and the history after every store update.
-func stream(st *store.Store, w http.ResponseWriter, r *http.Request) {
+func stream(st *store.Store, act *Active, w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -51,7 +69,8 @@ func stream(st *store.Store, w http.ResponseWriter, r *http.Request) {
 		payload := struct {
 			Snapshot any `json:"snapshot"`
 			History  any `json:"history"`
-		}{st.Latest(), st.History()}
+			Active   any `json:"active,omitempty"`
+		}{st.Latest(), st.History(), act.states()}
 		b, err := json.Marshal(payload)
 		if err != nil {
 			return err
