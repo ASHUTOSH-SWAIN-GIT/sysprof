@@ -21,6 +21,8 @@ bpf/ (C) -> eBPF maps -> internal/collector -> internal/store -> CLI top/record
 
 ## Run
 
+Full instructions for Linux and non-Linux machines: [USAGE.md](USAGE.md).
+
 Needs Linux 5.x+ with BTF (`/sys/kernel/btf/vmlinux`), tracefs mounted, and root.
 
 ```
