@@ -84,13 +84,18 @@ internal/cli        internal/server (REST + SSE)
 | Path | What it does |
 | --- | --- |
 | `bpf/syscall_latency.c` | enter/exit tracepoint programs, maps, histogram |
+| `bpf/shield_lsm.c` | LSM hooks that deny exec, open, ptrace by rule |
+| `bpf/sock_bypass.c` | sockops + sk_msg loopback bypass |
 | `bpf/headers/` | vendored eBPF helper headers (from cilium/ebpf examples) |
 | `internal/collector/ebpf_linux.go` | loads and attaches the program, reads `stats` (Linux only) |
 | `internal/collector/fake.go` | generated demo data for any OS |
 | `internal/collector/syscalllatency_bpfel.*` | generated Go bindings and compiled object (committed) |
 | `internal/model/` | shared types and percentile estimation |
 | `internal/store/` | filters, interval diffs, per syscall and per process stats, history, subscribers |
-| `internal/server/` | `/api/snapshot`, `/api/history`, `/api/processes`, `/stream` (SSE), static UI |
+| `internal/server/` | profiler API, `/stream` (SSE), active control routes, request guard, static UI |
+| `internal/shield/` | BPF LSM policy manager, attack simulation, fake |
+| `internal/sockbypass/` | sockmap manager, benchmark, fake |
+| `internal/scheduler/` | stress workers, nice policy, jitter probe, fake |
 | `internal/cli/` | terminal table rendering |
 | `internal/syscalls/` | syscall number to name tables (amd64, arm64) and blocking list |
 | `tools/gensyscalls/` | generates those tables from the kernel's own tables |
@@ -120,9 +125,51 @@ internal/cli        internal/server (REST + SSE)
 - `sysprof top`: live terminal table, like `top` for syscalls.
 - `sysprof serve --addr 127.0.0.1:8080`: collection plus web UI.
 - `sysprof record -o out.jsonl`: one JSON snapshot per interval to a file.
+- `serve` also takes `--no-active` and `--unsafe-remote-control`.
 - Flags: `--pid`, `--comm`, `--syscall`, `--interval`, `--fake`.
 
-## 9. Constraints and safety
+## 9. Active kernel features
+
+The profiler observes. Three more subsystems change behaviour. Each is an
+interface with a kernel implementation, a fake (`--fake`), and an
+`Unavailable` stand-in that carries the reason, so one missing kernel feature
+does not take the dashboard down.
+
+**Shield** (`bpf/shield_lsm.c`, `internal/shield`)
+- LSM programs on `bprm_check_security` (exec), `file_open` (open, path via
+  `bpf_d_path`) and `ptrace_access_check`. They run before the operation
+  and return `-EPERM`, optionally `bpf_send_signal(9)`.
+- Rules live in a 16 slot array map, so they change at runtime without
+  restarting anything. Matching is by process name (comm), pid and path prefix.
+- Counters are kernel side. Interception events come through a ring buffer.
+- The daemon's own pid is exempt, and the open path is skipped entirely while
+  no open rule exists.
+- Simulation: a hidden `__victim` subcommand renames itself `sysprof-victim`
+  and tries a shell exec, a canary file open, a ptrace attach and a file whose
+  rule is `KILL`. Nothing destructive is touched.
+
+**Bypass** (`bpf/sock_bypass.c`, `internal/sockbypass`)
+- `sockops` on the root cgroup puts established loopback sockets in a
+  sockhash. `sk_msg` redirects each send to the peer's receive queue
+  (`bpf_msg_redirect_hash` with `BPF_F_INGRESS`).
+- A `registered` map records which peers are in the sockhash, because a
+  redirect to a missing peer drops the data and `sk_msg` cannot release a
+  socket reference obtained from a sockhash lookup.
+- Toggling flips a flag in a map. Sockets only join while it is on.
+- Benchmark: 64 byte TCP ping-pong over a fresh connection, off then on.
+
+**Scheduler** (`internal/scheduler`)
+- Honest scope: no `sched_ext`. The policy is the nice value (0, 10, 19) of
+  stress workers, and effect is measured with a 1ms sleep overshoot probe.
+- The process table is real `/proc` data: nice, CPU, affinity and
+  involuntary context switches (preemptions).
+
+**HTTP safety**
+- State changing routes need `X-Sysprof-Action: 1` (forces a CORS preflight
+  that is never answered), a same origin `Origin`, a loopback `Host` and a
+  loopback listen address, unless `--unsafe-remote-control`.
+
+## 10. Constraints and safety
 
 - Needs Linux 5.x+ with BTF and tracefs, and root or `CAP_BPF` +
   `CAP_PERFMON`.
@@ -133,7 +180,7 @@ internal/cli        internal/server (REST + SSE)
 - Syscall numbers differ between x86_64 and arm64, so the binary uses the
   table for the architecture it was built for.
 
-## 10. Known limits
+## 11. Known limits
 
 - No per call outlier list. Raw events are never streamed, so the UI shows
   per syscall max latency instead.
@@ -143,8 +190,15 @@ internal/cli        internal/server (REST + SSE)
 - The `max` update in the kernel is not atomic, so a race can lose an update.
   It is a hint, not an exact figure.
 - Real data needs Linux. On macOS use Docker, a Linux VM, or `--fake`.
+- The shield covers exec, open and ptrace only, not mount or unshare. Exec
+  matches the path as passed to `execve`, so a relative path or a copy of a
+  shell under another name is not caught by a path rule.
+- The bypass only accelerates loopback IPv4 TCP opened while it is on, and
+  `packets` are `sendmsg` calls, not wire packets.
+- The scheduler pillar is nice values plus a jitter probe, not a sched_ext
+  scheduler. On a machine with many idle CPUs the improvement is small.
 
-## 11. Related docs
+## 12. Related docs
 
 - `README.md`: short overview and API list.
 - `USAGE.md`: how to run it on Linux and non Linux machines.

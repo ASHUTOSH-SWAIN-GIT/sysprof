@@ -9,14 +9,18 @@ build:
 build-linux:
 	GOOS=linux GOARCH=$${GOARCH:-arm64} go build -o $(BIN)-linux ./cmd/sysprof
 
-# Recompile bpf/syscall_latency.c into Go bindings. Needs clang on Linux; on a
-# Mac this runs inside a container because Apple clang has no BPF backend.
+# Recompile the bpf/*.c programs into Go bindings. Needs clang, llvm and
+# libbpf-dev on Linux; on a Mac this runs inside a container because Apple
+# clang has no BPF backend.
+GEN_PKGS := internal/collector internal/shield internal/sockbypass
+
 generate:
 ifeq ($(shell uname -s),Linux)
-	cd internal/collector && go generate ./...
+	for p in $(GEN_PKGS); do (cd $$p && go generate ./...) || exit 1; done
 else
-	docker run --rm -v "$$PWD":/src -w /src/internal/collector golang:1.26 sh -c \
-	  'apt-get update -qq && apt-get install -y -qq clang llvm && GOFLAGS=-buildvcs=false go generate ./...'
+	docker run --rm -v "$$PWD":/src -w /src golang:1.26 sh -c \
+	  'apt-get update -qq && apt-get install -y -qq clang llvm libbpf-dev linux-libc-dev && \
+	   export GOFLAGS=-buildvcs=false && for p in $(GEN_PKGS); do (cd $$p && go generate ./...) || exit 1; done'
 endif
 
 # Web UI with generated data, no Linux needed.

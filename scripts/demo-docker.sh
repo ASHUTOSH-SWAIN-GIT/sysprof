@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runs sysprof with real eBPF data inside Docker's Linux VM, with a small
-# workload generating varied syscalls. Open http://127.0.0.1:8080 afterwards.
+# workload generating varied syscalls. Shield, bypass and scheduler panels run
+# against the VM kernel too (try Simulate attack, Run benchmark, Inject load). Open http://127.0.0.1:8080 afterwards.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,5 +29,7 @@ docker run --rm -it --init --privileged --pid=host \
         sleep 0.2
       done ) &
 
-    exec /s/sysprof-linux serve --addr 0.0.0.0:8080
+    # The port is only published on 127.0.0.1 of the host, so remote control
+    # from inside the container network is safe here.
+    exec /s/sysprof-linux serve --addr 0.0.0.0:8080 --unsafe-remote-control
   '

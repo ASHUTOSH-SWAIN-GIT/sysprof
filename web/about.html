@@ -65,6 +65,9 @@
     <div class="card"><b>Waiting vs slow</b><span>Blocking syscalls such as <code>futex</code> and <code>epoll_wait</code> are tagged <span class="tag">wait</span>, since long latency is expected for them.</span></div>
     <div class="card"><b>Live updates</b><span>Server-Sent Events push a new snapshot every interval. No polling.</span></div>
     <div class="card"><b>Filters</b><span><code>--pid</code>, <code>--comm</code>, <code>--syscall</code> on the CLI filter before aggregating. The filter box here hides rows.</span></div>
+    <div class="card"><b>Active syscall shield</b><span>BPF LSM denies <code>exec</code>, <code>open</code> and <code>ptrace</code> for matching processes before they happen. Rules change at runtime.</span></div>
+    <div class="card"><b>TCP/IP stack bypass</b><span>sockmap and sk_msg move loopback TCP data straight into the peer socket. A benchmark compares both paths.</span></div>
+    <div class="card"><b>CPU scheduling policy</b><span>Priority policy for CPU hogs with a live wake-up jitter probe. Uses nice values, not sched_ext.</span></div>
     <div class="card"><b>Record mode</b><span><code>sysprof record</code> saves one JSON snapshot per interval for later analysis.</span></div>
   </div>
 
@@ -75,6 +78,7 @@ sysprof record -o out.jsonl      save snapshots to a file</pre>
 
   <h2>Good to know</h2>
   <ul>
+    <li>Each active panel shows a mode: <b>kernel</b> (real), <b>simulated</b> (<code>--fake</code>), or <b>unavailable</b> with the reason.</li>
     <li>Percentiles are estimated from log2 buckets, so they are accurate to within one power of two.</li>
     <li>Needs Linux with eBPF and root. On other systems it runs with generated demo data (<code>--fake</code>).</li>
     <li>The server binds to <code>127.0.0.1</code> because the tool runs as root and exposes system internals.</li>
@@ -82,7 +86,7 @@ sysprof record -o out.jsonl      save snapshots to a file</pre>
   </ul>
 
   <h2>Stack</h2>
-  <p>eBPF program in C, Go with <code>cilium/ebpf</code> for the collector, store and HTTP server,
+  <p>eBPF programs in C (tracepoints, LSM, sockops, sk_msg), Go with <code>cilium/ebpf</code> for the collector, store and HTTP server,
   cobra for the CLI, and a single embedded HTML page with canvas charts.</p>
 </main>
 </body>

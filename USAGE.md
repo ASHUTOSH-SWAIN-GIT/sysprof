@@ -74,6 +74,29 @@ make demo                         # or: bin/sysprof top --fake
 
 Generated numbers, useful for working on the CLI and UI only.
 
+## Active controls (shield, bypass, scheduler)
+
+Open the dashboard (`serve`). The three panels at the top are live.
+
+| Panel | Try this | Needs |
+| --- | --- | --- |
+| Shield | click Simulate attack, then watch the blocked counters | `bpf` in `/sys/kernel/security/lsm` |
+| Bypass | click Run benchmark, toggle Bypass ON/OFF | cgroup v2 at `/sys/fs/cgroup` |
+| Scheduler | click Inject CPU load, then switch the policy | any Linux |
+
+- A panel that cannot run shows `unavailable` and the reason; the rest keep working.
+- `--fake` makes all three simulated (badge says so), useful on a Mac.
+- `--no-active` loads only the profiler.
+- Custom shield rules: process name, pid and path prefix, for `exec`, `open`
+  or `ptrace`. Rules for all processes need a specific path so you cannot
+  block the whole system. They are removed when sysprof exits.
+- The benchmark and Inject CPU load run real work on the machine
+  (about 10 seconds and 20 seconds).
+- If `bpf` is missing from the LSM list, boot with
+  `lsm=landlock,lockdown,yama,integrity,apparmor,bpf` (adjust to your distro).
+- Binding `--addr` to a non-loopback address disables state changing requests
+  unless you also pass `--unsafe-remote-control`.
+
 ## Flags
 
 | Flag | Meaning |
@@ -84,6 +107,8 @@ Generated numbers, useful for working on the CLI and UI only.
 | `--interval 500ms` | how often the kernel maps are read (default 1s) |
 | `--fake` | use generated data instead of eBPF |
 | `--addr host:port` | `serve` only, default `127.0.0.1:8080` |
+| `--no-active` | `serve` only, skip shield, bypass and scheduler |
+| `--unsafe-remote-control` | `serve` only, allow changes from non-loopback listen addresses |
 | `-o file` | `record` only, default `sysprof.jsonl` |
 
 ## Reading the output
@@ -107,8 +132,12 @@ Generated numbers, useful for working on the CLI and UI only.
 | `eBPF is not available on darwin` | not on Linux, use Docker, a VM, or `--fake` |
 | No `/sys/kernel/btf/vmlinux` | kernel built without BTF, use a newer distro kernel |
 | Empty table in Docker | workload not started yet, wait a few seconds |
+| Shield `unavailable`, attach LSM failed | `bpf` is not in `/sys/kernel/security/lsm`, see above |
+| Bypass `unavailable`, attach sockops failed | cgroup v2 is not mounted at `/sys/fs/cgroup` |
+| Bypass shows no connections | only loopback TCP connections opened after the bypass was on are accelerated |
+| 403 on a POST | missing `X-Sysprof-Action: 1`, cross origin request, or non-loopback listen address |
 
 ## Changing the eBPF program
 
-Edit `bpf/syscall_latency.c`, then `make generate` (uses clang on Linux, a
-Docker container on macOS) and commit the regenerated `internal/collector/syscalllatency_bpfel.*` files.
+Edit a file in `bpf/`, then `make generate` (uses clang and libbpf-dev on
+Linux, a Docker container on macOS) and commit the regenerated `*_bpfel.*` files.
