@@ -27,7 +27,11 @@ func FormatNs(ns float64) string {
 // RenderTop writes a top-like table: syscalls first, then processes.
 // Blocking syscalls are tagged "wait" so they are not mistaken for slow ones.
 func RenderTop(w io.Writer, s model.Snapshot, rows int) {
-	fmt.Fprintf(w, "sysprof  %s  %.0f calls/s\n\n", s.Time.Format(time.TimeOnly), s.Rate)
+	fmt.Fprintf(w, "sysprof  %s  %.0f calls/s\n", s.Time.Format(time.TimeOnly), s.Rate)
+	for _, a := range s.Anomalies {
+		fmt.Fprintf(w, "spike  %s  p95 %s  %.1fx baseline\n", a.Name, FormatNs(a.P95Ns), a.Ratio)
+	}
+	fmt.Fprintln(w)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "SYSCALL\tCOUNT\tCALLS/S\tTOTAL\tAVG\tP50\tP95\tP99\tMAX\t")
@@ -54,6 +58,18 @@ func RenderTop(w io.Writer, s model.Snapshot, rows int) {
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%d\t%.0f\t%s\t%s\t%s\t\n", p.Comm, p.PID, p.Count, p.Rate,
 			FormatNs(float64(p.TotalNs)), FormatNs(p.AvgNs), p.TopSyscall)
+	}
+	tw.Flush()
+
+	fmt.Fprintln(w)
+	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "CATEGORY\tCOUNT\tCALLS/S\tTOTAL\tAVG\tP95\tSHARE\t")
+	for _, c := range s.Categories {
+		if c.Count == 0 {
+			continue
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%.0f\t%s\t%s\t%s\t%.0f%%\t\n", c.Name, c.Count, c.Rate,
+			FormatNs(float64(c.TotalNs)), FormatNs(c.AvgNs), FormatNs(c.P95Ns), c.Share*100)
 	}
 	tw.Flush()
 }

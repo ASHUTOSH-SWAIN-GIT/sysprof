@@ -26,6 +26,7 @@ type Entry struct {
 type SyscallStat struct {
 	Name     string   `json:"name"`
 	Nr       uint32   `json:"nr"`
+	Category string   `json:"category"`
 	Blocking bool     `json:"blocking"`
 	Count    uint64   `json:"count"`
 	TotalNs  uint64   `json:"total_ns"`
@@ -49,12 +50,38 @@ type ProcessStat struct {
 	TopSyscall string  `json:"top_syscall"` // by total time, blocking ones excluded
 }
 
+// CategoryStat is the aggregate of one syscall category.
+type CategoryStat struct {
+	Name    string  `json:"name"`
+	Count   uint64  `json:"count"`
+	TotalNs uint64  `json:"total_ns"`
+	AvgNs   float64 `json:"avg_ns"`
+	P50Ns   float64 `json:"p50_ns"`
+	P95Ns   float64 `json:"p95_ns"`
+	P99Ns   float64 `json:"p99_ns"`
+	Rate    float64 `json:"rate"`
+	Share   float64 `json:"share"` // fraction of total syscall time, 0..1
+}
+
+// Anomaly is a syscall whose latency in the last interval was well above its
+// recent baseline.
+type Anomaly struct {
+	Name   string    `json:"name"`
+	Count  uint64    `json:"count"`
+	P95Ns  float64   `json:"p95_ns"`
+	BaseNs float64   `json:"baseline_ns"`
+	Ratio  float64   `json:"ratio"`
+	Time   time.Time `json:"time"`
+}
+
 // Snapshot is the state at one point in time (cumulative since start).
 type Snapshot struct {
-	Time      time.Time     `json:"time"`
-	Rate      float64       `json:"rate"` // total calls per second over the last interval
-	Syscalls  []SyscallStat `json:"syscalls"`
-	Processes []ProcessStat `json:"processes"`
+	Time       time.Time      `json:"time"`
+	Rate       float64        `json:"rate"` // total calls per second over the last interval
+	Syscalls   []SyscallStat  `json:"syscalls"`
+	Processes  []ProcessStat  `json:"processes"`
+	Categories []CategoryStat `json:"categories"`
+	Anomalies  []Anomaly      `json:"anomalies"`
 }
 
 // Latency is the per interval latency summary of one syscall.

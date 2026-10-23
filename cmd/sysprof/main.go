@@ -2,9 +2,12 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +15,8 @@ import (
 
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/cli"
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/collector"
+	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/model"
+	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/report"
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/scheduler"
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/server"
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/shield"
@@ -133,7 +138,36 @@ func main() {
 	}
 	record.Flags().StringVarP(&out, "output", "o", "sysprof.jsonl", "output file")
 
-	root.AddCommand(top, serve, record, victim)
+	var (
+		inPath  string
+		outPath string
+		what    string
+	)
+	export := &cobra.Command{
+		Use:   "export",
+		Short: "convert the last snapshot of a JSONL recording to CSV",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			snap, err := lastSnapshot(inPath)
+			if err != nil {
+				return err
+			}
+			var w io.Writer = os.Stdout
+			if outPath != "-" {
+				f, err := os.Create(outPath)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				w = f
+			}
+			return report.Write(w, snap, what)
+		},
+	}
+	export.Flags().StringVarP(&inPath, "input", "i", "sysprof.jsonl", "recording to read")
+	export.Flags().StringVarP(&outPath, "output", "o", "-", "CSV file, - for stdout")
+	export.Flags().StringVar(&what, "what", "syscalls", "syscalls, processes or categories")
+
+	root.AddCommand(top, serve, record, export, victim)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -161,6 +195,39 @@ func run(o *options, use func(context.Context, *store.Store) error) error {
 	st := store.New(store.Filter{PID: o.pid, Comm: o.comm, Syscall: o.syscall}, historyWindow)
 	go st.Run(ctx, c, o.interval)
 	return use(ctx, st)
+}
+
+// lastSnapshot reads a JSONL recording and returns the final snapshot.
+func lastSnapshot(path string) (model.Snapshot, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return model.Snapshot{}, err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	var (
+		last  model.Snapshot
+		found bool
+	)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		if err := json.Unmarshal(line, &last); err != nil {
+			return model.Snapshot{}, fmt.Errorf("%s: %w", path, err)
+		}
+		found = true
+	}
+	if err := sc.Err(); err != nil {
+		return model.Snapshot{}, err
+	}
+	if !found {
+		return model.Snapshot{}, fmt.Errorf("%s: no snapshots", path)
+	}
+	return last, nil
 }
 
 // newActive builds the three active subsystems. Each one degrades on its own:

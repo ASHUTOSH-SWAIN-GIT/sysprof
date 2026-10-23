@@ -37,6 +37,23 @@ func (f Filter) match(e model.Entry, name string) bool {
 
 type key struct{ pid, nr uint32 }
 
+// catAgg accumulates one syscall category across all processes and syscalls.
+type catAgg struct {
+	count    uint64
+	deltaCnt uint64
+	totalNs  uint64
+	hist     []uint64
+}
+
+const (
+	spikeFactor        = 2.0
+	spikeMinDeltaNs    = 25_000
+	spikeMinCount      = 10
+	spikeMinBasePoints = 5
+	spikeBaseWindow    = 30
+	spikeMaxReported   = 5
+)
+
 // Store is safe for concurrent use.
 type Store struct {
 	filter   Filter
@@ -89,6 +106,7 @@ func (s *Store) Update(entries []model.Entry, now time.Time) {
 	bySys := map[uint32]*model.SyscallStat{}
 	delta := map[uint32]*[model.HistBuckets]uint64{} // interval histograms per syscall
 	deltaCnt := map[uint32]uint64{}
+	byCat := map[string]*catAgg{}
 	byProc := map[uint32]*model.ProcessStat{}
 	procSys := map[uint32]map[uint32]uint64{} // pid -> syscall -> total ns
 	procDelta := map[uint32]uint64{}
@@ -103,9 +121,21 @@ func (s *Store) Update(entries []model.Entry, now time.Time) {
 		k := key{e.PID, e.Syscall}
 		cur[k] = e
 
+		cat := syscalls.Category(name)
+		ca := byCat[cat]
+		if ca == nil {
+			ca = &catAgg{hist: make([]uint64, model.HistBuckets)}
+			byCat[cat] = ca
+		}
+		ca.count += e.Count
+		ca.totalNs += e.TotalNs
+		for i, c := range e.Hist {
+			ca.hist[i] += c
+		}
+
 		st := bySys[e.Syscall]
 		if st == nil {
-			st = &model.SyscallStat{Name: name, Nr: e.Syscall, Blocking: syscalls.IsBlocking(name), Hist: make([]uint64, model.HistBuckets)}
+			st = &model.SyscallStat{Name: name, Nr: e.Syscall, Category: cat, Blocking: syscalls.IsBlocking(name), Hist: make([]uint64, model.HistBuckets)}
 			bySys[e.Syscall] = st
 			delta[e.Syscall] = new([model.HistBuckets]uint64)
 		}
@@ -137,11 +167,11 @@ func (s *Store) Update(entries []model.Entry, now time.Time) {
 			pe = model.Entry{}
 		}
 		for i := range e.Hist {
-			d := e.Hist[i] - pe.Hist[i]
-			delta[e.Syscall][i] += d
+			delta[e.Syscall][i] += e.Hist[i] - pe.Hist[i]
 		}
 		dc := e.Count - pe.Count
 		deltaCnt[e.Syscall] += dc
+		ca.deltaCnt += dc
 		procDelta[e.PID] += dc
 		totalDelta += dc
 	}
@@ -176,6 +206,32 @@ func (s *Store) Update(entries []model.Entry, now time.Time) {
 	}
 	sort.Slice(snap.Syscalls, func(i, j int) bool { return snap.Syscalls[i].TotalNs > snap.Syscalls[j].TotalNs })
 
+	var allNs uint64
+	for _, ca := range byCat {
+		allNs += ca.totalNs
+	}
+	for name, ca := range byCat {
+		cs := model.CategoryStat{Name: name, Count: ca.count, TotalNs: ca.totalNs}
+		if cs.Count > 0 {
+			cs.AvgNs = float64(cs.TotalNs) / float64(cs.Count)
+		}
+		cs.P50Ns = model.Percentile(ca.hist, 0.50)
+		cs.P95Ns = model.Percentile(ca.hist, 0.95)
+		cs.P99Ns = model.Percentile(ca.hist, 0.99)
+		if !first && elapsed > 0 {
+			cs.Rate = float64(ca.deltaCnt) / elapsed
+		}
+		if allNs > 0 {
+			cs.Share = float64(cs.TotalNs) / float64(allNs)
+		}
+		snap.Categories = append(snap.Categories, cs)
+	}
+	sort.Slice(snap.Categories, func(i, j int) bool { return snap.Categories[i].TotalNs > snap.Categories[j].TotalNs })
+
+	if !first {
+		snap.Anomalies = detectAnomalies(hp, s.history)
+	}
+
 	for pid, p := range byProc {
 		if p.Count > 0 {
 			p.AvgNs = float64(p.TotalNs) / float64(p.Count)
@@ -207,6 +263,58 @@ func (s *Store) Update(entries []model.Entry, now time.Time) {
 		default: // slow subscriber, it will catch up on the next tick
 		}
 	}
+}
+
+// detectAnomalies compares the last interval against the median p95 of the
+// preceding points. A syscall is flagged when its p95 is at least 2x the
+// baseline and the increase is large enough to notice.
+func detectAnomalies(cur model.HistoryPoint, prior []model.HistoryPoint) []model.Anomaly {
+	if len(prior) < spikeMinBasePoints {
+		return nil
+	}
+	start := len(prior) - spikeBaseWindow
+	if start < 0 {
+		start = 0
+	}
+	window := prior[start:]
+
+	var out []model.Anomaly
+	for name, lat := range cur.Syscalls {
+		if lat.Count < spikeMinCount || lat.P95Ns <= 0 {
+			continue
+		}
+		base := medianP95(window, name)
+		if base <= 0 {
+			continue
+		}
+		ratio := lat.P95Ns / base
+		if ratio < spikeFactor || lat.P95Ns-base < spikeMinDeltaNs {
+			continue
+		}
+		out = append(out, model.Anomaly{
+			Name: name, Count: lat.Count, P95Ns: lat.P95Ns,
+			BaseNs: base, Ratio: ratio, Time: cur.Time,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Ratio > out[j].Ratio })
+	if len(out) > spikeMaxReported {
+		out = out[:spikeMaxReported]
+	}
+	return out
+}
+
+func medianP95(points []model.HistoryPoint, name string) float64 {
+	vals := make([]float64, 0, len(points))
+	for _, p := range points {
+		if l, ok := p.Syscalls[name]; ok && l.Count > 0 && l.P95Ns > 0 {
+			vals = append(vals, l.P95Ns)
+		}
+	}
+	if len(vals) < spikeMinBasePoints {
+		return 0
+	}
+	sort.Float64s(vals)
+	return vals[len(vals)/2]
 }
 
 // Latest returns the most recent snapshot.

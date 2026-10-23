@@ -75,6 +75,9 @@
     <div class="card"><b>Latency histogram</b><span>Log2 buckets for the selected syscall, so you see the shape and the long tail, not just an average.</span></div>
     <div class="card"><b>Percentiles over time</b><span>p50 / p95 / p99 line chart from the rolling history, to spot when latency changed.</span></div>
     <div class="card"><b>Per process breakdown</b><span>Which processes make the most calls and spend the most time, and their top syscall.</span></div>
+    <div class="card"><b>Category breakdown</b><span>Calls grouped into file, memory, network, process, sync, signal and time, with each category's share of total time.</span></div>
+    <div class="card"><b>Latency spike detection</b><span>Flags syscalls whose interval p95 is at least 2x their recent median, so a transient stall stands out from the steady state.</span></div>
+    <div class="card"><b>CSV export</b><span><code>/api/export.csv</code> or <code>sysprof export</code> writes syscalls, processes or categories for a spreadsheet.</span></div>
     <div class="card"><b>Waiting vs slow</b><span>Blocking syscalls such as <code>futex</code> and <code>epoll_wait</code> are tagged <span class="tag">wait</span>, since long latency is expected for them.</span></div>
     <div class="card"><b>Live updates</b><span>Server-Sent Events push a new snapshot every interval. No polling.</span></div>
     <div class="card"><b>Filters</b><span><code>--pid</code>, <code>--comm</code>, <code>--syscall</code> on the CLI filter before aggregating. The filter box here hides rows.</span></div>
@@ -88,6 +91,7 @@
 <pre>sysprof top                      live terminal table
 sysprof serve                    this web UI, on 127.0.0.1:8080
 sysprof record -o out.jsonl      save snapshots to a file
+sysprof export -i out.jsonl      turn the last snapshot into CSV
 sysprof serve --fake             demo data, active panels simulated</pre>
 
   <h2>Good to know</h2>
@@ -98,6 +102,7 @@ sysprof serve --fake             demo data, active panels simulated</pre>
     <li>The server binds to <code>127.0.0.1</code> because the tool runs as root and exposes system internals.</li>
     <li>The shield covers exec, open and ptrace. The scheduler panel does not load a <code>sched_ext</code> scheduler.</li>
     <li>Raw per call events are never streamed, so there is no per call outlier list. Max latency is shown instead.</li>
+    <li>Spike detection needs five intervals of history before it can compare against a baseline. Categories are name based heuristics.</li>
   </ul>
 
   <h2>Stack</h2>

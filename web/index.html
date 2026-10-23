@@ -48,6 +48,9 @@
   tr.flash td { animation: flash 1.2s ease-out; }
   .kpis { display:flex; gap:20px; margin:6px 0; } .kpis div span { display:block; color:var(--dim); font-size:11px; }
   .kpis div b { font-size:16px; }
+  .share { display:inline-block; width:80px; height:5px; background:var(--line); vertical-align:middle; }
+  .share i { display:block; height:100%; background:var(--bar); }
+  .tag.spike { color:var(--p99); }
   h3 { font-size:12px; margin:14px 4px 4px; color:var(--dim); }
   @media (max-width:900px) { main { grid-template-columns: 1fr; } .active { grid-template-columns: 1fr; } }
 </style>
@@ -132,6 +135,12 @@
   <section><h2>Processes</h2>
     <table id="proc"><thead><tr><th>process</th><th>pid</th><th>count</th><th>calls/s</th><th>total</th><th>avg</th><th>top syscall</th></tr></thead><tbody></tbody></table>
   </section>
+  <section><h2>Time by category</h2>
+    <table id="cats"><thead><tr><th>category</th><th>count</th><th>calls/s</th><th>total</th><th>avg</th><th>p95</th><th>share</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="wide"><h2>Latency spikes <span class="dim">(last interval p95 vs recent baseline)</span></h2>
+    <ul class="log" id="spikes"></ul>
+  </section>
 </main>
 <script>
 let snap = null, hist = [], selected = null, sortKey = "total_ns";
@@ -147,18 +156,30 @@ function render() {
   if (!snap) return;
   const q = $("filter").value.trim().toLowerCase();
   $("rate").textContent = fmtN(snap.rate) + " calls/s";
+  const spikes = new Map((snap.anomalies || []).map(a => [a.name, a]));
 
   const rows = (snap.syscalls || []).filter(s => matches(q, s.name)).sort((a,b) =>
     sortKey === "name" ? a.name.localeCompare(b.name) : b[sortKey] - a[sortKey]);
   if (!selected && rows.length) selected = rows[0].name;
   $("sys").tBodies[0].innerHTML = rows.slice(0, 40).map(s =>
-    `<tr data-n="${s.name}" class="${s.name===selected?"sel":""}"><td>${s.name}${s.blocking?'<span class="tag">wait</span>':""}</td>
+    `<tr data-n="${s.name}" class="${s.name===selected?"sel":""}"><td>${s.name}${s.blocking?'<span class="tag">wait</span>':""}${spikes.has(s.name)?'<span class="tag spike">spike</span>':""}</td>
      <td>${fmtN(s.count)}</td><td>${fmtN(s.rate)}</td><td>${fmtNs(s.total_ns)}</td><td>${fmtNs(s.avg_ns)}</td>
      <td>${fmtNs(s.p50_ns)}</td><td>${fmtNs(s.p95_ns)}</td><td>${fmtNs(s.p99_ns)}</td><td>${fmtNs(s.max_ns)}</td></tr>`).join("");
 
   $("proc").tBodies[0].innerHTML = (snap.processes || []).filter(p => matches(q, p.comm, p.pid)).slice(0, 15).map(p =>
     `<tr><td>${p.comm}</td><td>${p.pid}</td><td>${fmtN(p.count)}</td><td>${fmtN(p.rate)}</td>
      <td>${fmtNs(p.total_ns)}</td><td>${fmtNs(p.avg_ns)}</td><td>${p.top_syscall||"-"}</td></tr>`).join("");
+
+  $("cats").tBodies[0].innerHTML = (snap.categories || []).filter(c => c.count > 0).map(c =>
+    `<tr><td>${c.name}</td><td>${fmtN(c.count)}</td><td>${fmtN(c.rate)}</td><td>${fmtNs(c.total_ns)}</td>
+     <td>${fmtNs(c.avg_ns)}</td><td>${fmtNs(c.p95_ns)}</td>
+     <td><span class="share"><i style="width:${(c.share*100).toFixed(1)}%"></i></span> ${(c.share*100).toFixed(0)}%</td></tr>`).join("")
+    || '<tr><td colspan="7" style="text-align:left;color:var(--dim)">no data</td></tr>';
+
+  $("spikes").innerHTML = (snap.anomalies || []).map(a =>
+    `<li>${a.name} p95 <b class="k">${fmtNs(a.p95_ns)}</b> vs ${fmtNs(a.baseline_ns)} baseline
+     (${a.ratio.toFixed(1)}x, ${fmtN(a.count)} calls)</li>`).join("")
+    || "<li>none in the last interval</li>";
 
   const sel = (snap.syscalls || []).find(s => s.name === selected);
   $("selA").textContent = $("selB").textContent = selected || "-";

@@ -34,6 +34,16 @@
    reading, and publishes a snapshot.
 5. The CLI and the browser read the same snapshot.
 
+The store adds two summaries on top of the raw counters:
+
+- **Categories.** Each syscall name maps to a group (file, memory, network,
+  process, sync, signal, time, other). Categories are aggregated like syscalls,
+  and `share` says how much of the total syscall time each one used.
+- **Spikes.** The current interval's p95 for a syscall is compared with the
+  median p95 of up to the previous 30 intervals. If it is at least 2x the
+  baseline and 25us higher (with at least 10 calls), the syscall is reported as
+  an anomaly. This needs five intervals of history before it starts.
+
 Design choices behind this:
 
 - **Aggregate in the kernel.** Millions of syscalls per second cannot be sent
@@ -91,7 +101,8 @@ internal/cli        internal/server (REST + SSE)
 | `internal/collector/fake.go` | generated demo data for any OS |
 | `internal/collector/syscalllatency_bpfel.*` | generated Go bindings and compiled object (committed) |
 | `internal/model/` | shared types and percentile estimation |
-| `internal/store/` | filters, interval diffs, per syscall and per process stats, history, subscribers |
+| `internal/store/` | filters, interval diffs, per syscall/process/category stats, spikes, history, subscribers |
+| `internal/report/` | CSV output for syscalls, processes and categories |
 | `internal/server/` | profiler API, `/stream` (SSE), active control routes, request guard, static UI |
 | `internal/shield/` | BPF LSM policy manager, attack simulation, fake |
 | `internal/sockbypass/` | sockmap manager, benchmark, fake |
@@ -125,6 +136,8 @@ internal/cli        internal/server (REST + SSE)
 - `sysprof top`: live terminal table, like `top` for syscalls.
 - `sysprof serve --addr 127.0.0.1:8080`: collection plus web UI.
 - `sysprof record -o out.jsonl`: one JSON snapshot per interval to a file.
+- `sysprof export -i out.jsonl --what categories -o out.csv`: last recorded
+  snapshot as CSV (`syscalls`, `processes` or `categories`).
 - `serve` also takes `--no-active` and `--unsafe-remote-control`.
 - Flags: `--pid`, `--comm`, `--syscall`, `--interval`, `--fake`.
 
@@ -184,6 +197,10 @@ does not take the dashboard down.
 
 - No per call outlier list. Raw events are never streamed, so the UI shows
   per syscall max latency instead.
+- Spike detection starts after five intervals, uses the interval p95 (not raw
+  calls), and ignores syscalls with fewer than 10 calls in that interval.
+- Categories are name based heuristics; an unlisted or new syscall counts as
+  `other`.
 - The UI filter box only hides rows. For filtered percentiles use the CLI
   flags, which filter before aggregating.
 - Percentiles are approximate (log2 buckets).

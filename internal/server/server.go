@@ -3,12 +3,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
+	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/report"
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/scheduler"
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/shield"
 	"github.com/ASHUTOSH-SWAIN-GIT/sysprof/internal/sockbypass"
@@ -43,6 +46,24 @@ func New(st *store.Store, act *Active) http.Handler {
 	})
 	mux.HandleFunc("GET /api/processes", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, st.Latest().Processes)
+	})
+	mux.HandleFunc("GET /api/export.csv", func(w http.ResponseWriter, r *http.Request) {
+		kind := r.URL.Query().Get("what")
+		if kind == "" {
+			kind = "syscalls"
+		}
+		if !slices.Contains(report.Kinds, kind) {
+			http.Error(w, "what must be one of syscalls, processes or categories", http.StatusBadRequest)
+			return
+		}
+		var buf bytes.Buffer
+		if err := report.Write(&buf, st.Latest(), kind); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="sysprof-%s.csv"`, kind))
+		w.Write(buf.Bytes())
 	})
 	mux.HandleFunc("GET /stream", func(w http.ResponseWriter, r *http.Request) {
 		stream(st, act, w, r)

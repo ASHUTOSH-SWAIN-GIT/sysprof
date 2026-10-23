@@ -83,9 +83,23 @@ func TestRuleValidationReturns400(t *testing.T) {
 
 func TestReadEndpointsNeedNoHeader(t *testing.T) {
 	h := newTestServer(false)
-	for _, p := range []string{"/api/shield", "/api/bypass", "/api/scheduler"} {
+	for _, p := range []string{"/api/shield", "/api/bypass", "/api/scheduler", "/api/export.csv?what=categories"} {
 		if rec := do(h, "GET", p, "127.0.0.1:8080", nil, ""); rec.Code != http.StatusOK {
 			t.Errorf("%s: %d", p, rec.Code)
 		}
+	}
+}
+
+func TestExportCSV(t *testing.T) {
+	h := newTestServer(false)
+	rec := do(h, "GET", "/api/export.csv?what=processes", "127.0.0.1:8080", nil, "")
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Fatalf("content type = %q", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "process,pid") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if bad := do(h, "GET", "/api/export.csv?what=nope", "127.0.0.1:8080", nil, ""); bad.Code != http.StatusBadRequest {
+		t.Fatalf("unknown kind: %d", bad.Code)
 	}
 }

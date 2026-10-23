@@ -24,7 +24,11 @@ Run one of:
 sudo bin/sysprof top                          # live terminal table
 sudo bin/sysprof serve                        # web UI on http://127.0.0.1:8080
 sudo bin/sysprof record -o out.jsonl          # one JSON snapshot per interval
+bin/sysprof export -i out.jsonl --what categories -o categories.csv
 ```
+
+`export` reads the final snapshot in a recording and writes CSV for
+`syscalls`, `processes` or `categories`. `-o -` writes to stdout.
 
 Generate some load in another terminal so there is something to see:
 
@@ -109,7 +113,9 @@ Open the dashboard (`serve`). The three panels at the top are live.
 | `--addr host:port` | `serve` only, default `127.0.0.1:8080` |
 | `--no-active` | `serve` only, skip shield, bypass and scheduler |
 | `--unsafe-remote-control` | `serve` only, allow changes from non-loopback listen addresses |
-| `-o file` | `record` only, default `sysprof.jsonl` |
+| `-o file` | `record` output file (default `sysprof.jsonl`), or `export` CSV file (`-` is stdout) |
+| `-i file` | `export` only, recording to read (default `sysprof.jsonl`) |
+| `--what kind` | `export` only: `syscalls`, `processes` or `categories` |
 
 ## Reading the output
 
@@ -120,8 +126,14 @@ Open the dashboard (`serve`). The three panels at the top are live.
   buckets, so they are accurate to within one power of two.
 - **wait tag**: blocking syscalls such as `futex`, `epoll_wait`, `nanosleep`.
   Long latency is expected for them, it does not mean slowness.
+- **spike tag / spike lines**: a syscall whose p95 in the last interval was at
+  least 2x its recent median (and 25us higher). Spike detection starts after
+  five intervals, so it stays quiet right after startup.
+- **CATEGORY table**: file, memory, network, process, sync, signal and time,
+  with each category's share of the total syscall time. Useful to say whether
+  a workload is I/O bound, network bound or scheduler bound.
 - In the web UI, click a syscall row to see its histogram and its
-  p50/p95/p99 over time.
+  p50/p95/p99 over time. The category and spike panels are below the tables.
 
 ## Troubleshooting
 

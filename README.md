@@ -11,6 +11,10 @@ observed programs.
   updates a per (pid, syscall) log2 histogram plus count, total and max.
 - Go reads the map every `--interval` (default 1s), keeps the last 300 intervals,
   and estimates p50/p95/p99 from the histogram buckets (approximate).
+- Calls are grouped into categories (file, memory, network, process, sync,
+  signal, time) for a workload summary.
+- Each interval is compared with the recent median p95, and a syscall is tagged
+  as a spike when it is at least 2x slower (and 25us above the baseline).
 - Blocking syscalls (`futex`, `epoll_wait`, `nanosleep`, ...) are tagged `wait`
   because long latency is expected for them.
 
@@ -30,9 +34,11 @@ make build
 sudo bin/sysprof top
 sudo bin/sysprof serve --addr 127.0.0.1:8080
 sudo bin/sysprof record -o out.jsonl
+bin/sysprof export -i out.jsonl --what categories -o categories.csv
 ```
 
-Flags: `--pid`, `--comm`, `--syscall`, `--interval`.
+Flags: `--pid`, `--comm`, `--syscall`, `--interval`. `export` takes
+`--what syscalls|processes|categories`, `-i` and `-o` (`-` is stdout).
 
 On a Mac there is no eBPF. Use demo data to work on the UI and CLI:
 
@@ -71,9 +77,11 @@ programs disappear when the process exits.
 
 ## API
 
-- `GET /api/snapshot`: per syscall stats (cumulative, plus current calls/s)
+- `GET /api/snapshot`: per syscall stats (cumulative, plus current calls/s),
+  categories and interval spikes
 - `GET /api/history`: per interval p50/p95/p99 and rate
 - `GET /api/processes`: per process stats
+- `GET /api/export.csv?what=syscalls|processes|categories`: CSV of the latest snapshot
 - `GET /stream`: SSE, one `{snapshot, history, active}` event per interval
 - `GET /api/shield`, `POST /api/shield/rules`, `DELETE /api/shield/rules/{id}`, `POST /api/shield/simulate`
 - `GET /api/bypass`, `POST /api/bypass/toggle`, `POST /api/bypass/benchmark`
